@@ -10,10 +10,11 @@
 #include "settings.h"
 
 #include <stdio.h>
+#include <stdlib.h>   /* setenv/strdup */
 #include <string.h>
 #include <gtk/gtk.h>   /* 带出 g_get_home_dir/gtk_init/gtk_main 声明，避免隐式声明导致指针截断崩溃 */
 
-#define LINDER_VERSION "0.7.8-alpha"
+#define LINDER_VERSION "0.7.9-alpha"
 
 static void usage(const char *prog) {
     printf("Linder %s — Linux 文件管理器（兼容 mac .DS_Store）\n\n", LINDER_VERSION);
@@ -278,6 +279,11 @@ static int cmd_info(const char *dir) {
 }
 
 int main(int argc, char **argv) {
+    /* GTK3 Wayland 下 gtk_window_move / XMoveWindow 会被 mutter 忽略，导致
+     * 自绘无边框窗口拖不动。强制走 X11（Xwayland），窗口拖动、无边框、图标
+     * 才正常。必须在任何 gtk_init 之前设置。 */
+    setenv("GDK_BACKEND", "x11", 1);
+
     /* 裸命令（不带参数）→ 打开文件管理器 GUI（默认家目录） */
     if (argc < 2) {
         const char *h = g_get_home_dir();
