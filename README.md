@@ -23,13 +23,26 @@ npm install -g linder
 ## 使用
 
 ```
-linder                  打开文件管理器（默认家目录）
-linder <目录>            打开指定目录
-linder set              打开设置面板
-linder poop on/off      开关「排放 .DS_Store」（带 [y/N] 确认）
-linder --version        查看版本号
-linder help             帮助
+linder                      打开文件管理器（默认家目录）
+linder <目录>               打开指定目录
+linder set                  打开设置面板
+linder view <目录>          打开文件夹视图窗口（背景铺满）
+linder set-bg <目录> <图>    设置文件夹背景图
+linder set-color <目录> <颜色>  设置背景配色
+linder set-icon <目录> <图标>  设置自定义图标
+linder clear-icon <目录>     清除自定义图标
+linder parse <.DS_Store>     解析 mac 的 .DS_Store（双向兼容）
+linder info <目录>            读取并打印元数据
+linder show <目录>            显示 .DS_Store 文件
+linder hide <目录>            隐藏 .DS_Store 文件
+linder poop on|off           排放 .DS_Store 开关（浏览自动留 .DS_Store）
+linder --version             查看版本号
+linder help                  帮助
 ```
+
+## 截图
+
+（待补充）
 
 ## 从源码构建
 
@@ -39,6 +52,11 @@ cd Linder
 make
 sudo make install
 ```
+
+## 致谢
+
+- 代码大模型：Deepseek v4 pro、gpt-5.6
+- 图片识别大模型：我自己、gpt-5.6
 
 ## License
 

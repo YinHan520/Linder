@@ -13,7 +13,7 @@
 #include <string.h>
 #include <gtk/gtk.h>   /* 带出 g_get_home_dir/gtk_init/gtk_main 声明，避免隐式声明导致指针截断崩溃 */
 
-#define LINDER_VERSION "0.7.7-alpha"
+#define LINDER_VERSION "0.7.8-alpha"
 
 static void usage(const char *prog) {
     printf("Linder %s — Linux 文件管理器（兼容 mac .DS_Store）\n\n", LINDER_VERSION);

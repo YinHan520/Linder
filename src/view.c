@@ -234,7 +234,7 @@ static gboolean on_draw_bg(GtkWidget *widget, cairo_t *cr, gpointer unused) {
         }
     }
 
-    return TRUE;
+    return FALSE;
 }
 
 
@@ -2896,7 +2896,7 @@ static void apply_theme(void) {
         ".pathbar button { color: #3a3a3c; font-size: 11px; }"
         ".pathbar button:hover { color: #000; }"
         ".statusbar-item { color: #3a3a3c; font-size: 10px; }"
-        ".sidebar-panel { background-color: rgba(245,245,247,0.96); }"
+        ".sidebar-panel { background-color: rgba(245,245,247,0.35); }"
         "paned > separator { background-color: rgba(0,0,0,0.06); }"
         
         "scrolledwindow { background-color: transparent; }"
