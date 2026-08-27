@@ -13,8 +13,10 @@
 #include <string.h>
 #include <gtk/gtk.h>   /* 带出 g_get_home_dir/gtk_init/gtk_main 声明，避免隐式声明导致指针截断崩溃 */
 
+#define LINDER_VERSION "0.7.7-alpha"
+
 static void usage(const char *prog) {
-    printf("Linder — Linux 文件管理器（兼容 mac .DS_Store）\n\n");
+    printf("Linder %s — Linux 文件管理器（兼容 mac .DS_Store）\n\n", LINDER_VERSION);
     printf("用法：\n");
     printf("  %s                          打开文件管理器（默认家目录）\n", prog);
     printf("  %s <目录>                    打开指定目录到文件管理器\n", prog);
@@ -32,6 +34,7 @@ static void usage(const char *prog) {
     printf("  %s poop on|off               排放 .DS_Store 开关（浏览自动留 .DS_Store）\n", prog);
     printf("  %s info <目录>               读取并打印元数据\n", prog);
     printf("  %s help | -h | --help        显示帮助\n", prog);
+    printf("  %s --version |-v             显示版本号\n", prog);
     printf("\n说明：\n");
     printf("  元数据文件名为 .DS_Store（标准名，跟 mac 一致）。\n");
 }
@@ -294,6 +297,12 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /* --version / -v */
+    if (strcmp(cmd, "--version") == 0 || strcmp(cmd, "-v") == 0) {
+        printf("Linder %s\n", LINDER_VERSION);
+        return 0;
+    }
+
     /* set → 打开设置面板 */
     if (strcmp(cmd, "set") == 0) {
         gtk_init(&argc, &argv);
@@ -320,11 +329,6 @@ int main(int argc, char **argv) {
     }
     else if (strcmp(cmd, "view") == 0) {
         if (argc < 3) { usage(argv[0]); return 1; }
-        /* view 可接可选第 4 参 --shot <out.png>：渲染后自动存图退出 */
-        if (argc >= 5 && strcmp(argv[3], "--shot") == 0) {
-            gtk_init(&argc, &argv);
-            return view_open_shot(argv[2], argv[4]);
-        }
         return view_open(argv[2]);
     }
     else if (strcmp(cmd, "parse") == 0) {
