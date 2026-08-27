@@ -18,4 +18,8 @@ const char *settings_default_view(void);
 /* 打开设置面板窗口（GTK 对话框），返回 0 成功 */
 int settings_open(void);
 
+/* 强力排放（由 main.c 实现，设置面板调用）：递归整个文件系统 + 可移动设备
+ * 塞标准 mac 二进制 .DS_Store，有权限就塞、无权限跳过。 */
+void linder_strong_poop_run(long *done, long *skipped);
+
 #endif /* SETTINGS_H */

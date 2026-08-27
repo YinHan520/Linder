@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>   /* setenv/strdup */
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <errno.h>
 #include <gtk/gtk.h>   /* 带出 g_get_home_dir/gtk_init/gtk_main 声明，避免隐式声明导致指针截断崩溃 */
 
 #define LINDER_VERSION "0.7.9-alpha"
@@ -33,6 +36,7 @@ static void usage(const char *prog) {
     printf("  %s show <目录>               显示 .DS_Store 文件\n", prog);
     printf("  %s hide <目录>               隐藏 .DS_Store 文件\n", prog);
     printf("  %s poop on|off               排放 .DS_Store 开关（浏览自动留 .DS_Store）\n", prog);
+    printf("  %s poop-strong               强力排放（不可逆，所有可写目录塞 .DS_Store）\n", prog);
     printf("  %s info <目录>               读取并打印元数据\n", prog);
     printf("  %s help | -h | --help        显示帮助\n", prog);
     printf("  %s --version |-v             显示版本号\n", prog);
@@ -102,6 +106,118 @@ static int cmd_poop(const char *arg) {
         return 0;
     }
     printf("当前排放 .DS_Store：%s\n", dsstore_poop_enabled() ? "开" : "关");
+    return 0;
+}
+
+/* ---------- 强力排放 ---------- */
+
+static long g_strong_done = 0;
+static long g_strong_skipped = 0;
+
+/* 判断挂载点是否是可移动设备（/media/*、/run/media/* 或 fstype 是 vfat/exfat/ntfs/fuse） */
+static int is_removable_mount(const char *dev, const char *mnt, const char *fstype) {
+    (void)dev;
+    if (strncmp(mnt, "/media/", 7) == 0) return 1;
+    if (strncmp(mnt, "/run/media/", 11) == 0) return 1;
+    if (strcmp(fstype, "vfat") == 0 || strcmp(fstype, "exfat") == 0 ||
+        strcmp(fstype, "ntfs") == 0 || strcmp(fstype, "ntfs3") == 0 ||
+        strcmp(fstype, "fuseblk") == 0) return 1;
+    return 0;
+}
+
+/* 给单个可写目录塞一个空 .DS_Store（标准 mac 隐藏名） */
+static int strong_deposit_one(const char *dir) {
+    DsStoreMeta m;
+    meta_init(&m);
+    int r = dsstore_write(dir, &m, 0); /* visible=0 → 隐藏 .DS_Store（标准 mac 名） */
+    meta_free(&m);
+    return r;
+}
+
+/* 递归遍历：有权限（能写）的目录就塞，无权限（EACCES）跳过；不跨越挂载点之外的符号链接 */
+static void strong_walk(const char *dir, int depth) {
+    if (depth > 64) return;
+    DIR *d = opendir(dir);
+    if (!d) return; /* 打不开（无权限/不存在）→ 跳过 */
+
+    /* 当前目录若能写，塞一个 .DS_Store */
+    if (strong_deposit_one(dir) == 0) {
+        g_strong_done++;
+    } else {
+        g_strong_skipped++;
+    }
+
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.' && (de->d_name[1] == '\0' ||
+            (de->d_name[1] == '.' && de->d_name[2] == '\0'))) continue;
+        /* 拼子路径 */
+        char sub[4096];
+        snprintf(sub, sizeof(sub), "%s/%s", dir, de->d_name);
+
+        struct stat st;
+        if (lstat(sub, &st) != 0) continue;
+        /* 只递归真目录，跳过符号链接（避免环） */
+        if (S_ISDIR(st.st_mode)) {
+            strong_walk(sub, depth + 1);
+        }
+    }
+    closedir(d);
+}
+
+/* 扫 /proc/mounts，对所有可移动设备挂载点递归塞 */
+static void strong_deposit_removable(void) {
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) return;
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        char dev[256], mnt[256], fstype[64];
+        if (sscanf(line, "%255s %255s %63s", dev, mnt, fstype) != 3) continue;
+        if (!is_removable_mount(dev, mnt, fstype)) continue;
+        strong_walk(mnt, 0);
+    }
+    fclose(fp);
+}
+
+/* 执行强力排放（供命令行 poop-strong 和设置面板共用）。
+ * 递归整个文件系统 + 可移动设备，塞标准 mac 二进制 .DS_Store，
+ * 有权限就塞、无权限跳过。结果通过 *done/*skipped 返回。 */
+void linder_strong_poop_run(long *done, long *skipped) {
+    g_strong_done = 0;
+    g_strong_skipped = 0;
+
+    /* 1) 可移动设备（U 盘/移动硬盘）优先塞 */
+    strong_deposit_removable();
+
+    /* 2) 递归整个文件系统（从 / 开始） */
+    strong_walk("/", 0);
+
+    if (done)   *done   = g_strong_done;
+    if (skipped)*skipped= g_strong_skipped;
+}
+
+/* poop-strong 子命令：弹「不可逆」确认后，递归塞满所有有权限目录 + 可移动设备 */
+static int cmd_poop_strong(void) {
+    fprintf(stderr, "警告：强力排放会让所有可写的文件夹都生成 .DS_Store，"
+                    "此操作【不可逆】。确定继续吗？[y/N] ");
+    fflush(stderr);
+    char line[64];
+    if (!fgets(line, sizeof(line), stdin)) {
+        fprintf(stderr, "已取消。\n");
+        return 0;
+    }
+    if (line[0] != 'y' && line[0] != 'Y') {
+        fprintf(stderr, "已取消。\n");
+        return 0;
+    }
+
+    fprintf(stderr, "开始强力排放（递归整个文件系统，无权限自动跳过）...\n");
+
+    long done = 0, skipped = 0;
+    linder_strong_poop_run(&done, &skipped);
+
+    fprintf(stderr, "强力排放完成：成功 %ld 个文件夹，跳过 %ld 个（无权限/不可写）。\n",
+            done, skipped);
     return 0;
 }
 
@@ -363,6 +479,9 @@ int main(int argc, char **argv) {
     }
     else if (strcmp(cmd, "poop") == 0) {
         return cmd_poop(argc > 2 ? argv[2] : NULL);
+    }
+    else if (strcmp(cmd, "poop-strong") == 0) {
+        return cmd_poop_strong();
     }
     else if (strcmp(cmd, "info") == 0) {
         if (argc < 3) { usage(argv[0]); return 1; }

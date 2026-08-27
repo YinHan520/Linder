@@ -186,6 +186,48 @@ static GtkWidget *make_poop_switch(void) {
     return sw;
 }
 
+/* ============ 强力排放按钮 ============ */
+
+/* 跑完弹结果窗 */
+static void show_strong_result(GtkWidget *parent, long done, long skipped) {
+    GtkWidget *dlg = gtk_message_dialog_new(
+        GTK_WINDOW(parent), GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+        "强力排放完成\n成功 %ld 个文件夹，跳过 %ld 个（无权限/不可写）。",
+        done, skipped);
+    gtk_window_set_title(GTK_WINDOW(dlg), "强力排放");
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
+/* 确认后真正执行强力排放 */
+static void do_strong_poop(GtkWidget *parent) {
+    GtkWidget *dlg = gtk_message_dialog_new(
+        GTK_WINDOW(parent), GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING,
+        GTK_BUTTONS_OK_CANCEL,
+        "强力排放会让所有可写的文件夹都生成 .DS_Store，\n此操作【不可逆】。确定继续吗？");
+    gtk_window_set_title(GTK_WINDOW(dlg), "确认");
+    gint r = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (r != GTK_RESPONSE_OK) return;
+
+    long done = 0, skipped = 0;
+    linder_strong_poop_run(&done, &skipped);
+    show_strong_result(parent, done, skipped);
+}
+
+/* 强力排放按钮点击 */
+static void on_strong_clicked(GtkButton *b, gpointer u) {
+    (void)b;
+    GtkWidget *win = (GtkWidget *)u;
+    do_strong_poop(win);
+}
+
+static GtkWidget *make_strong_button(GtkWidget *win) {
+    GtkWidget *btn = gtk_button_new_with_label("强力排放");
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_strong_clicked), win);
+    return btn;
+}
+
 /* 加一行：左 label 右 widget */
 static void add_row(GtkGrid *grid, int row, const char *label, GtkWidget *widget) {
     GtkWidget *lbl = gtk_label_new(label);
@@ -215,6 +257,7 @@ int settings_open(void) {
     add_row(GTK_GRID(grid), 0, "界面语言：", make_lang_selector());
     add_row(GTK_GRID(grid), 1, "默认视图：", make_view_selector());
     add_row(GTK_GRID(grid), 2, "排放 .DS_Store：", make_poop_switch());
+    add_row(GTK_GRID(grid), 3, "强力模式：", make_strong_button(g_win));
 
     gtk_widget_show_all(g_win);
     return 0;

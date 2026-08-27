@@ -44,6 +44,7 @@ linder info <目录>            读取并打印元数据
 linder show <目录>            显示 .DS_Store 文件
 linder hide <目录>            隐藏 .DS_Store 文件
 linder poop on|off           排放 .DS_Store 开关（浏览自动留 .DS_Store）
+linder poop-strong           强力排放（不可逆，所有可写目录塞 .DS_Store）
 linder --version             查看版本号
 linder help                  帮助
 ```
