@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Linder
+GenericName=File Manager
+Comment=mac-style file manager (folder background images + .DS_Store interop)
+Exec=linder %U
+Icon=linder
+Terminal=false
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+StartupNotify=true
+Keywords=file;manager;folder;browse;linder;mac;

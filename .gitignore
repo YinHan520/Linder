@@ -1,0 +1,19 @@
+# build artifacts
+*.o
+linder
+Linder-render
+dist/
+*.tgz
+
+# editor / OS
+*.swp
+.DS_Store
+Thumbs.db
+
+# debug / backup scripts
+*.bak
+*.bak_*
+vm_*.sh
+run_*.sh
+shot*.sh
+debug_*.py
