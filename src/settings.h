@@ -18,6 +18,12 @@ const char *settings_default_view(void);
 /* 打开设置面板窗口（GTK 对话框），返回 0 成功 */
 int settings_open(void);
 
+/* 显示隐藏文件开关（showhidden=on 返回 1，缺省 off 返回 0） */
+int show_hidden_enabled(void);
+
+/* 设置显示隐藏文件开关（on=1/off=0），命令行与设置面板共用 */
+void settings_set_show_hidden(int on);
+
 /* 强力排放（由 main.c 实现，设置面板调用）：递归整个文件系统 + 可移动设备
  * 塞标准 mac 二进制 .DS_Store，有权限就塞、无权限跳过。 */
 void linder_strong_poop_run(long *done, long *skipped);

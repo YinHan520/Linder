@@ -1,5 +1,9 @@
 # Linder
 
+<p align="center">
+  <img src="icons/linder_512.png" width="128" alt="Linder">
+</p>
+
 > 一个像 macOS Finder 的 Linux 文件管理器（GTK3 原生）。侧边栏 + 工具栏 + 图标网格/列表视图 + 双击导航，每个文件夹可以有独立的背景图，并原生读写标准 `.DS_Store`，与 macOS Finder 双向兼容。
 
 当前版本：`0.7.9-alpha`
@@ -65,6 +69,13 @@ sudo make install
 - 代码大模型：Deepseek v4 pro、gpt-5.6
 - 图片识别大模型：我自己、gpt-5.6
 - 模型提供者:mcsher、Deepseek
+
+## 反馈
+
+遇到问题或想提建议，欢迎通过以下方式联系：
+
+- 邮箱：z3595375960@outlook.com
+- GitHub Issues：[YinHan520/Linder](https://github.com/YinHan520/Linder/issues)
 
 ## License
 

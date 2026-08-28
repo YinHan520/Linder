@@ -13,11 +13,13 @@
 #include <stdlib.h>   /* setenv/strdup */
 #include <string.h>
 #include <dirent.h>
+#include <unistd.h>   /* isatty/fileno */
 #include <sys/stat.h>
 #include <errno.h>
 #include <gtk/gtk.h>   /* 带出 g_get_home_dir/gtk_init/gtk_main 声明，避免隐式声明导致指针截断崩溃 */
+#include <glib/gstdio.h>   /* g_remove */
 
-#define LINDER_VERSION "0.7.9-alpha"
+#define LINDER_VERSION "0.7.10-alpha"
 
 static void usage(const char *prog) {
     printf("Linder %s — Linux 文件管理器（兼容 mac .DS_Store）\n\n", LINDER_VERSION);
@@ -33,8 +35,11 @@ static void usage(const char *prog) {
     printf("  %s parse <.DS_Store>        解析 mac 的 .DS_Store（双向兼容）\n", prog);
     printf("  %s write <输出路径>         生成标准 .DS_Store（测试）\n", prog);
     printf("  %s write-bg <路径> <图>     生成带图片背景的 .DS_Store\n", prog);
-    printf("  %s show <目录>               显示 .DS_Store 文件\n", prog);
-    printf("  %s hide <目录>               隐藏 .DS_Store 文件\n", prog);
+    printf("  %s show                       显示隐藏文件（开）\n", prog);
+    printf("  %s hide                       隐藏隐藏文件（关）\n", prog);
+    printf("  %s trash-list                 列出废纸篓中的文件\n", prog);
+    printf("  %s trash-restore <名字>       还原废纸篓文件到原路径\n", prog);
+    printf("  %s trash-empty                清空废纸篓\n", prog);
     printf("  %s poop on|off               排放 .DS_Store 开关（浏览自动留 .DS_Store）\n", prog);
     printf("  %s poop-strong               强力排放（不可逆，所有可写目录塞 .DS_Store）\n", prog);
     printf("  %s info <目录>               读取并打印元数据\n", prog);
@@ -394,6 +399,221 @@ static int cmd_info(const char *dir) {
     return 0;
 }
 
+/* ---------- 废纸篓（标准 XDG Trash）---------- */
+
+static char *trash_files_dir(void) {
+    return g_build_filename(g_get_user_data_dir(), "Trash", "files", NULL);
+}
+
+static char *trash_info_dir(void) {
+    return g_build_filename(g_get_user_data_dir(), "Trash", "info", NULL);
+}
+
+/* 列出废纸篓里的文件名（去掉 .trashinfo 后缀只用于 info，files 里是原名） */
+static int cmd_trash_list(void) {
+    char *files = trash_files_dir();
+    DIR *d = opendir(files);
+    if (!d) {
+        printf("废纸篓为空。\n");
+        g_free(files);
+        return 0;
+    }
+    struct dirent *de;
+    int n = 0;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        printf("%s\n", de->d_name);
+        n++;
+    }
+    closedir(d);
+    if (n == 0) printf("废纸篓为空。\n");
+    g_free(files);
+    return 0;
+}
+
+/* 从 .trashinfo 读原路径（Path=URL编码），解码后返回绝对路径 */
+static char *trashinfo_original_path(const char *name) {
+    char *info_dir = trash_info_dir();
+    char *info_file = g_strdup_printf("%s/%s.trashinfo", info_dir, name);
+    g_free(info_dir);
+
+    char *result = NULL;
+    FILE *fp = fopen(info_file, "r");
+    if (!fp) { g_free(info_file); return NULL; }
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strncmp(line, "Path=", 5) == 0) {
+            const char *enc = line + 5;
+            /* URL 解码（%20 等），GFilenameFromUri 或手动。用 g_uri_unescape_string */
+            result = g_uri_unescape_string(enc, NULL);
+            break;
+        }
+    }
+    fclose(fp);
+    g_free(info_file);
+    return result;
+}
+
+/* 还原：把 files/name 移回原路径（同名覆盖） */
+static int cmd_trash_restore(const char *name) {
+    if (!name || !name[0] || strchr(name, '/')) {
+        fprintf(stderr, "Linder: 无效的文件名\n");
+        return 1;
+    }
+    char *files = trash_files_dir();
+    char *src = g_strdup_printf("%s/%s", files, name);
+    g_free(files);
+
+    char *orig = trashinfo_original_path(name);
+    if (!orig || !orig[0]) {
+        fprintf(stderr, "Linder: 找不到废纸篓条目 %s 的原路径\n", name);
+        g_free(src);
+        g_free(orig);
+        return 1;
+    }
+
+    GFile *sf = g_file_new_for_path(src);
+    GFile *df = g_file_new_for_path(orig);
+    GError *err = NULL;
+    /* 原路径已存在同名文件时禁止覆盖（安全优先，CLI 不弹窗） */
+    if (g_file_query_exists(df, NULL)) {
+        fprintf(stderr, "Linder: 原路径已存在同名文件 %s，已取消还原（未覆盖）。\n", orig);
+        g_object_unref(sf);
+        g_object_unref(df);
+        g_free(src);
+        g_free(orig);
+        return 1;
+    }
+    if (!g_file_move(sf, df, G_FILE_COPY_NONE, NULL, NULL, NULL, &err)) {
+        fprintf(stderr, "Linder: 还原失败 %s: %s\n", name, err ? err->message : "");
+        g_clear_error(&err);
+        g_object_unref(sf);
+        g_object_unref(df);
+        g_free(src);
+        g_free(orig);
+        return 1;
+    }
+    g_object_unref(sf);
+    g_object_unref(df);
+
+    /* 删除对应 .trashinfo */
+    char *info_dir = trash_info_dir();
+    char *info_file = g_strdup_printf("%s/%s.trashinfo", info_dir, name);
+    g_free(info_dir);
+    g_remove(info_file);
+    g_free(info_file);
+
+    printf("已还原：%s → %s\n", name, orig);
+    g_free(src);
+    g_free(orig);
+    return 0;
+}
+
+/* 递归删除目录树（不跟随符号链接，避免误删链接指向的真实目录）
+ * 返回失败的删除数（0 = 全部成功），供上层统计。 */
+static int trash_delete_tree(const char *path) {
+    struct stat lst;
+    if (lstat(path, &lst) != 0) return 0;
+    if (S_ISLNK(lst.st_mode)) {
+        /* 符号链接：只删链接本身，不递归 */
+        return (g_remove(path) == 0) ? 0 : 1;
+    }
+    if (!S_ISDIR(lst.st_mode)) { return (g_remove(path) == 0) ? 0 : 1; }
+
+    int failed = 0;
+    DIR *d = opendir(path);
+    if (!d) return 1;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        char *sub = g_strdup_printf("%s/%s", path, de->d_name);
+        struct stat st;
+        if (lstat(sub, &st) == 0 && S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode))
+            failed += trash_delete_tree(sub);
+        else {
+            if (g_remove(sub) != 0) failed++;
+        }
+        g_free(sub);
+    }
+    closedir(d);
+    if (g_remove(path) != 0) failed++;
+    return failed;
+}
+
+/* 只删除目录内的全部内容，但保留目录本身（用于 files/info 目录）
+ * 返回失败的删除数。 */
+static int trash_delete_tree_contents(const char *path) {
+    struct stat lst;
+    if (lstat(path, &lst) != 0) return 0;
+    if (S_ISLNK(lst.st_mode) || !S_ISDIR(lst.st_mode)) return 0;
+    int failed = 0;
+    DIR *d = opendir(path);
+    if (!d) return 1;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        char *sub = g_strdup_printf("%s/%s", path, de->d_name);
+        failed += trash_delete_tree(sub);
+        g_free(sub);
+    }
+    closedir(d);
+    return failed;
+}
+
+/* 清空废纸篓：只删 files/info 目录下内容，不删目录本身；带确认 */
+static int cmd_trash_empty(const char *arg) {
+    char *files = trash_files_dir();
+    char *info = trash_info_dir();
+
+    /* 只删除目录里的内容，不删 files/info 目录本身 */
+    struct stat lst;
+    if (lstat(files, &lst) == 0 && S_ISLNK(lst.st_mode)) {
+        fprintf(stderr, "Linder: 废纸篓 files 路径是符号链接，拒绝操作。\n");
+        g_free(files);
+        g_free(info);
+        return 1;
+    }
+    if (lstat(info, &lst) == 0 && S_ISLNK(lst.st_mode)) {
+        fprintf(stderr, "Linder: 废纸篓 info 路径是符号链接，拒绝操作。\n");
+        g_free(files);
+        g_free(info);
+        return 1;
+    }
+
+    /* 确认：只有 tty 才交互问；--force 直接执行 */
+    if (!(arg && strcmp(arg, "--force") == 0)) {
+        if (isatty(fileno(stdin))) {
+            fprintf(stderr, "确定清空废纸篓？输入 yes 确认：");
+            char buf[16];
+            if (!fgets(buf, sizeof(buf), stdin) || strncmp(buf, "yes", 3) != 0) {
+                fprintf(stderr, "已取消。\n");
+                g_free(files);
+                g_free(info);
+                return 1;
+            }
+        } else {
+            fprintf(stderr, "Linder: 非交互环境清空废纸篓需加 --force。\n");
+            g_free(files);
+            g_free(info);
+            return 1;
+        }
+    }
+
+    /* 只删目录下内容，汇总失败数 */
+    int failed = 0;
+    failed += trash_delete_tree_contents(files);
+    failed += trash_delete_tree_contents(info);
+    g_free(files);
+    g_free(info);
+    if (failed > 0) {
+        fprintf(stderr, "Linder: 清空废纸篓完成，但有 %d 项删除失败。\n", failed);
+        return 1;
+    }
+    printf("废纸篓已清空。\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     /* GTK3 Wayland 下 gtk_window_move / XMoveWindow 会被 mutter 忽略，导致
      * 自绘无边框窗口拖不动。强制走 X11（Xwayland），窗口拖动、无边框、图标
@@ -466,16 +686,24 @@ int main(int argc, char **argv) {
         return cmd_write_bg(argv[2], argv[3]);
     }
     else if (strcmp(cmd, "show") == 0) {
-        if (argc < 3) { usage(argv[0]); return 1; }
-        int r = dsstore_set_visible(argv[2], 1);
-        if (r == 0) printf("已显示：%s\n", argv[2]);
-        return r;
+        settings_set_show_hidden(1);
+        printf("已显示隐藏文件\n");
+        return 0;
     }
     else if (strcmp(cmd, "hide") == 0) {
+        settings_set_show_hidden(0);
+        printf("已隐藏隐藏文件\n");
+        return 0;
+    }
+    else if (strcmp(cmd, "trash-list") == 0) {
+        return cmd_trash_list();
+    }
+    else if (strcmp(cmd, "trash-restore") == 0) {
         if (argc < 3) { usage(argv[0]); return 1; }
-        int r = dsstore_set_visible(argv[2], 0);
-        if (r == 0) printf("已隐藏：%s\n", argv[2]);
-        return r;
+        return cmd_trash_restore(argv[2]);
+    }
+    else if (strcmp(cmd, "trash-empty") == 0) {
+        return cmd_trash_empty(argc > 2 ? argv[2] : NULL);
     }
     else if (strcmp(cmd, "poop") == 0) {
         return cmd_poop(argc > 2 ? argv[2] : NULL);
@@ -488,7 +716,16 @@ int main(int argc, char **argv) {
         return cmd_info(argv[2]);
     }
     else {
-        usage(argv[0]);
-        return 1;
+        /* 不是已知子命令 → 当目录路径（或 file:// URI）打开文件管理器。
+         * 处理桌面双击文件夹传入的 Linder.desktop `Exec=linder %U` 参数。 */
+        const char *target = argv[1];
+        char *decoded = NULL;
+        if (strncmp(target, "file://", 7) == 0) {
+            decoded = g_filename_from_uri(target, NULL, NULL);
+            if (decoded) target = decoded;
+        }
+        int r = view_open(target);
+        g_free(decoded);
+        return r;
     }
 }

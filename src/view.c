@@ -298,7 +298,15 @@ static void do_clear_bg(void) {
     DsStoreWrite w;
     memset(&w, 0, sizeof(w));
     w.has_bg = 0; /* overwrite without background */
-    dsstore_write_file(ds, &w);
+    int r = dsstore_write_file(ds, &w);
+    if (r != 0) {
+        GtkWidget *ed = gtk_message_dialog_new(GTK_WINDOW(g.window),
+            GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+            "%s", tr("清除背景失败", "Failed to clear background"));
+        gtk_dialog_run(GTK_DIALOG(ed));
+        gtk_widget_destroy(ed);
+        return;
+    }
     reload_dsstore();
     if (g.overlay) gtk_widget_queue_draw(g.overlay); else gtk_widget_queue_draw(g.bg);
 }
@@ -553,7 +561,7 @@ static void refresh_views(void) {
     int n = 0;
     while ((de = readdir(d)) != NULL && n < 4096) {
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
-        if (strcmp(de->d_name, ".DS_Store") == 0) continue;
+        if (!show_hidden_enabled() && de->d_name[0] == '.') continue;
 
         char full[4096];
         snprintf(full, sizeof(full), "%s/%s", g.dir, de->d_name);
@@ -628,7 +636,8 @@ static void refresh_views(void) {
         gtk_list_store_append(g.list_store, &it2);
         gtk_list_store_set(g.list_store, &it2,
                            0, pix2, 1, name, 2, sz,
-                           3, entry_type(name, isdir), 4, mtime, -1);
+                           3, entry_type(name, isdir), 4, mtime,
+                           5, (guint64)(isdir ? 0 : st.st_size), -1);
         if (pix2) g_object_unref(pix2);
     }
 
@@ -1128,8 +1137,14 @@ static void miller_add_column(const char *path) {
         int cnt = 0, cap = 0;
         while ((de = readdir(d)) != NULL) {
             if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
-            if (strcmp(de->d_name, ".DS_Store") == 0) continue;
-            if (cnt + 1 > cap) { cap = cap ? cap*2 : 64; names = realloc(names, sizeof(char*)*cap); }
+            if (!show_hidden_enabled() && de->d_name[0] == '.') continue;
+            if (cnt + 1 > cap) {
+                int ncap = cap ? cap*2 : 64;
+                char **nn = realloc(names, sizeof(char*) * ncap);
+                if (!nn) break;   /* realloc 失败：停止收集，避免直接崩溃 */
+                names = nn;
+                cap = ncap;
+            }
             names[cnt++] = strdup(de->d_name);
         }
         closedir(d);
@@ -1224,8 +1239,12 @@ static void do_delete(const char *full) {
         GFile *gf = g_file_new_for_path(f);
         GError *err = NULL;
         if (!g_file_trash(gf, NULL, &err)) {
+            GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(g.window),
+                GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                "%s\n%s", tr("无法移到废纸篓（文件未被删除）", "Cannot move to Trash"), err ? err->message : "");
+            gtk_dialog_run(GTK_DIALOG(dlg));
+            gtk_widget_destroy(dlg);
             g_clear_error(&err);
-            g_file_delete(gf, NULL, NULL);
         }
         g_object_unref(gf);
         g_free(f);
@@ -1256,21 +1275,68 @@ static void do_copy(const char *full, int cut) {
 static void do_paste(void) {
     if (!g.clip_list || g.clip_list->len == 0) return;
     GError *err = NULL;
+    /* 逐项维护队列：只保留“未成功处理”的条目（跳过/失败/取消后未处理），
+     * 已成功移动/复制的条目从剪贴板移除，避免重试时源文件已不存在。 */
+    GPtrArray *remaining = g_ptr_array_new_with_free_func(g_free);
     for (guint i = 0; i < g.clip_list->len; i++) {
         const char *src = g_ptr_array_index(g.clip_list, i);
         char *name = g_path_get_basename(src);
         char *dst = g_strdup_printf("%s/%s", g.dir, name);
         GFile *sf = g_file_new_for_path(src);
         GFile *df = g_file_new_for_path(dst);
-        if (g.clip_cut)
-            g_file_move(sf, df, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, &err);
-        else
-            g_file_copy(sf, df, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, &err);
+
+        GFileCopyFlags flags = G_FILE_COPY_NONE;
+        if (g_file_query_exists(df, NULL)) {
+            /* 目标已存在：弹确认框（替换/跳过/取消） */
+            GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(g.window),
+                GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
+                "%s\n%s", tr("已有同名文件，是否替换？", "A file with the same name already exists. Replace it?"), name);
+            gtk_dialog_add_buttons(GTK_DIALOG(dlg),
+                tr("替换", "Replace"), 1,
+                tr("跳过", "Skip"), 2,
+                tr("取消", "Cancel"), 3,
+                NULL);
+            gtk_dialog_set_default_response(GTK_DIALOG(dlg), 2);
+            gint r = gtk_dialog_run(GTK_DIALOG(dlg));
+            gtk_widget_destroy(dlg);
+            if (r == 1) {
+                /* 明确点“替换”才覆盖 */
+                flags = G_FILE_COPY_OVERWRITE;
+            } else if (r == 2) { /* 跳过这个文件：留在 remaining */
+                g_ptr_array_add(remaining, g_strdup(src));
+                g_object_unref(sf);
+                g_object_unref(df);
+                g_free(name);
+                g_free(dst);
+                continue;
+            } else { /* 取消 / 点关闭 / 按 Esc / 其它未知响应：当前及后续都保留 */
+                g_ptr_array_add(remaining, g_strdup(src));
+                g_object_unref(sf);
+                g_object_unref(df);
+                g_free(name);
+                g_free(dst);
+                /* 把后续未处理的也一并保留 */
+                for (guint k = i + 1; k < g.clip_list->len; k++)
+                    g_ptr_array_add(remaining, g_strdup(g_ptr_array_index(g.clip_list, k)));
+                break;
+            }
+        }
+
+        gboolean ok = g.clip_cut
+            ? g_file_move(sf, df, flags, NULL, NULL, NULL, &err)
+            : g_file_copy(sf, df, flags, NULL, NULL, NULL, &err);
         g_object_unref(sf);
         g_object_unref(df);
         g_free(name);
         g_free(dst);
-        if (err) break;
+        if (!ok) {
+            /* 失败：当前及后续都保留 */
+            g_ptr_array_add(remaining, g_strdup(src));
+            for (guint k = i + 1; k < g.clip_list->len; k++)
+                g_ptr_array_add(remaining, g_strdup(g_ptr_array_index(g.clip_list, k)));
+            break;
+        }
+        /* 成功：不加入 remaining（即从剪贴板移除） */
     }
     if (err) {
         GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(g.window),
@@ -1280,7 +1346,14 @@ static void do_paste(void) {
         gtk_widget_destroy(dlg);
         g_error_free(err);
     }
-    if (g.clip_cut) clip_list_clear();
+    /* 用 remaining 替换剪贴板（remaining 为空 = 全部成功 = 清空） */
+    clip_list_clear();
+    if (remaining->len > 0) {
+        g.clip_list = g_ptr_array_new_with_free_func(g_free);
+        for (guint i = 0; i < remaining->len; i++)
+            g_ptr_array_add(g.clip_list, g_strdup(g_ptr_array_index(remaining, i)));
+    }
+    g_ptr_array_free(remaining, TRUE);
     refresh_views();
 }
 
@@ -1322,6 +1395,13 @@ static void do_rename(const char *full) {
 }
 
 
+/* 回收子进程（g_child_watch_add 回调），只 waitpid 不阻塞，避免僵尸进程 */
+static void reap_child(GPid pid, gint status, gpointer data) {
+    (void)status; (void)data;
+    g_spawn_close_pid(pid);
+}
+
+
 /* 在终端中打开：右键文件夹 → 在该文件夹路径开终端；右键空白 → 在当前目录开终端。
  * 用 g_spawn_async 后台拉起 gnome-terminal，不阻塞 Linder。 */
 static void do_open_terminal(void) {
@@ -1335,14 +1415,20 @@ static void do_open_terminal(void) {
     gchar *wd_opt = g_strdup_printf("--working-directory=%s", target);
     gchar *argv[] = { (gchar*)"gnome-terminal", wd_opt, NULL };
     GError *err = NULL;
+    GPid pid = 0;
+    /* 必须用 G_SPAWN_DO_NOT_REAP_CHILD + g_child_watch_add：DO_NOT_REAP 告诉 GLib
+     * 别自动 waitpid，把回收交给 g_child_watch_add，否则子进程被 GLib 静默回收、
+     * child watch 空转，僵尸进程问题依旧。 */
     gboolean ok = g_spawn_async(NULL, argv, NULL,
                                 G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
-                                NULL, NULL, NULL, &err);
+                                NULL, NULL, &pid, &err);
     if (!ok) {
         if (err) {
             g_warning("open terminal failed: %s", err->message);
             g_error_free(err);
         }
+    } else {
+        g_child_watch_add(pid, (GChildWatchFunc)reap_child, NULL);
     }
     g_free(wd_opt);
 }
@@ -1352,14 +1438,37 @@ static void do_new_folder(void) {
     GFile *f = g_file_new_for_path(dst);
     GError *err = NULL;
     if (!g_file_make_directory(f, NULL, &err)) {
+        /* 只有「重名」才自动加数字后缀；其它错误（权限/磁盘满/只读）直接报 */
+        if (err && !g_error_matches(err, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
+            GtkWidget *ed = gtk_message_dialog_new(GTK_WINDOW(g.window),
+                GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                tr("新建文件夹失败：%s", "New folder failed: %s"), err->message);
+            gtk_dialog_run(GTK_DIALOG(ed));
+            gtk_widget_destroy(ed);
+            g_error_free(err); err = NULL;
+            g_object_unref(f);
+            g_free(dst);
+            return;
+        }
         if (err) { g_error_free(err); err = NULL; }
-        
+
         for (int i = 2; i < 100; i++) {
             g_free(dst);
             dst = g_strdup_printf("%s/%s %d", g.dir, tr("新建文件夹", "New Folder"), i);
             g_object_unref(f);
             f = g_file_new_for_path(dst);
             if (g_file_make_directory(f, NULL, &err)) break;
+            if (err && !g_error_matches(err, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
+                GtkWidget *ed = gtk_message_dialog_new(GTK_WINDOW(g.window),
+                    GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                    tr("新建文件夹失败：%s", "New folder failed: %s"), err->message);
+                gtk_dialog_run(GTK_DIALOG(ed));
+                gtk_widget_destroy(ed);
+                g_error_free(err); err = NULL;
+                g_object_unref(f);
+                g_free(dst);
+                return;
+            }
             if (err) { g_error_free(err); err = NULL; }
         }
     }
@@ -1383,12 +1492,23 @@ static void do_new_file(const char *action) {
     (void)isdir;
 
     char *dst = g_strdup_printf("%s/%s%s", g.dir, tr("未命名", "Untitled"), ext);
-    /* try to create; on EEXIST increment suffix */
+    /* try to create; only on EEXIST increment suffix */
     GError *err = NULL;
     GFile *f = g_file_new_for_path(dst);
     GFileOutputStream *out = g_file_create(f, G_FILE_CREATE_NONE, NULL, &err);
-    if (!out && err) {
-        g_clear_error(&err);
+    if (!out) {
+        if (err && !g_error_matches(err, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
+            GtkWidget *ed = gtk_message_dialog_new(GTK_WINDOW(g.window),
+                GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                tr("新建文件失败：%s", "New file failed: %s"), err->message);
+            gtk_dialog_run(GTK_DIALOG(ed));
+            gtk_widget_destroy(ed);
+            g_error_free(err); err = NULL;
+            g_object_unref(f);
+            g_free(dst);
+            return;
+        }
+        if (err) g_clear_error(&err);
         for (int i = 2; i < 1000; i++) {
             g_free(dst);
             dst = g_strdup_printf("%s/%s %d%s", g.dir, tr("未命名", "Untitled"), i, ext);
@@ -1396,6 +1516,17 @@ static void do_new_file(const char *action) {
             f = g_file_new_for_path(dst);
             out = g_file_create(f, G_FILE_CREATE_NONE, NULL, &err);
             if (out) break;
+            if (err && !g_error_matches(err, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
+                GtkWidget *ed = gtk_message_dialog_new(GTK_WINDOW(g.window),
+                    GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                    tr("新建文件失败：%s", "New file failed: %s"), err->message);
+                gtk_dialog_run(GTK_DIALOG(ed));
+                gtk_widget_destroy(ed);
+                g_error_free(err); err = NULL;
+                g_object_unref(f);
+                g_free(dst);
+                return;
+            }
             if (err) g_clear_error(&err);
         }
     }
@@ -1542,33 +1673,39 @@ static char *current_selected_name(void) {
     return NULL;
 }
 
-/* collect all currently selected file names (list view + icon view) */
+/* collect all currently selected file names (only the visible view) */
 static GPtrArray *get_selected_names(void) {
     GPtrArray *names = g_ptr_array_new_with_free_func(g_free);
 
-    /* list view: all selected rows */
-    GtkTreeSelection *lsel = gtk_tree_view_get_selection(GTK_TREE_VIEW(g.listview));
-    GtkTreeModel *lmodel = NULL;
-    GList *rows = gtk_tree_selection_get_selected_rows(lsel, &lmodel);
-    for (GList *l = rows; l; l = l->next) {
-        GtkTreeIter it;
-        gchar *n = NULL;
-        if (gtk_tree_model_get_iter(lmodel, &it, l->data))
-            gtk_tree_model_get(lmodel, &it, 1, &n, -1);
-        if (n) g_ptr_array_add(names, n);
-    }
-    if (rows) g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+    /* 只读当前可见视图的选择，避免隐藏视图的旧选择被合并进来 */
+    const char *vis = gtk_stack_get_visible_child_name(GTK_STACK(g.stack));
+    int want_list = (vis && strcmp(vis, "list") == 0);
 
-    /* icon view: all selected items */
-    GList *ipaths = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(g.iconview));
-    for (GList *l = ipaths; l; l = l->next) {
-        GtkTreeIter it;
-        gchar *n = NULL;
-        if (gtk_tree_model_get_iter(GTK_TREE_MODEL(g.icon_store), &it, l->data))
-            gtk_tree_model_get(GTK_TREE_MODEL(g.icon_store), &it, 1, &n, -1);
-        if (n) g_ptr_array_add(names, n);
+    if (want_list) {
+        /* list view: all selected rows */
+        GtkTreeSelection *lsel = gtk_tree_view_get_selection(GTK_TREE_VIEW(g.listview));
+        GtkTreeModel *lmodel = NULL;
+        GList *rows = gtk_tree_selection_get_selected_rows(lsel, &lmodel);
+        for (GList *l = rows; l; l = l->next) {
+            GtkTreeIter it;
+            gchar *n = NULL;
+            if (gtk_tree_model_get_iter(lmodel, &it, l->data))
+                gtk_tree_model_get(lmodel, &it, 1, &n, -1);
+            if (n) g_ptr_array_add(names, n);
+        }
+        if (rows) g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+    } else {
+        /* icon view: all selected items */
+        GList *ipaths = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(g.iconview));
+        for (GList *l = ipaths; l; l = l->next) {
+            GtkTreeIter it;
+            gchar *n = NULL;
+            if (gtk_tree_model_get_iter(GTK_TREE_MODEL(g.icon_store), &it, l->data))
+                gtk_tree_model_get(GTK_TREE_MODEL(g.icon_store), &it, 1, &n, -1);
+            if (n) g_ptr_array_add(names, n);
+        }
+        if (ipaths) g_list_free_full(ipaths, (GDestroyNotify)gtk_tree_path_free);
     }
-    if (ipaths) g_list_free_full(ipaths, (GDestroyNotify)gtk_tree_path_free);
 
     return names;
 }
@@ -2374,6 +2511,10 @@ static void on_recent_menu_activate(GtkMenuItem *mi, gpointer data) {
 }
 
 /* clicked the "最近使用" row -> popup a submenu of recently-visited dirs */
+static void recent_arr_destroy(gpointer data) {
+    if (data) g_ptr_array_free((GPtrArray*)data, TRUE);
+}
+
 static void on_recent_row_activated(GtkWidget *row, gpointer u) {
     (void)row; (void)u;
     char *fp = recent_file_path();
@@ -2406,8 +2547,8 @@ static void on_recent_row_activated(GtkWidget *row, gpointer u) {
     gtk_widget_show_all(menu);
     /* popup near the sidebar row */
     gtk_menu_popup_at_widget(GTK_MENU(menu), row, GDK_GRAVITY_EAST, GDK_GRAVITY_NORTH_WEST, NULL);
-    /* keep arr alive until menu closes; simplest: leak-free via destroy callback */
-    g_object_set_data_full(G_OBJECT(menu), "recent-arr", arr, (GDestroyNotify)g_ptr_array_free);
+    /* keep arr alive until menu closes; destroy via proper 1-arg wrapper */
+    g_object_set_data_full(G_OBJECT(menu), "recent-arr", arr, recent_arr_destroy);
 }
 
 static void on_sidebar_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer u) {
@@ -3256,8 +3397,9 @@ int view_open(const char *dir) {
     g_signal_connect(g.iconview, "drag-data-received", G_CALLBACK(on_drag_data_received), NULL);
 
     
-    g.list_store = gtk_list_store_new(5, GDK_TYPE_PIXBUF, G_TYPE_STRING,
-                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    g.list_store = gtk_list_store_new(6, GDK_TYPE_PIXBUF, G_TYPE_STRING,
+                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+                                      G_TYPE_UINT64);
     g.listview = gtk_tree_view_new_with_model(GTK_TREE_MODEL(g.list_store));
     
     GtkTreeSelection *listsel = gtk_tree_view_get_selection(GTK_TREE_VIEW(g.listview));
@@ -3280,7 +3422,8 @@ int view_open(const char *dir) {
     GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *c2 = gtk_tree_view_column_new_with_attributes(
         tr("大小", "Size"), r2, "text", 2, NULL);
-    gtk_tree_view_column_set_sort_column_id(c2, 2);
+    /* 大小按数值（第 5 列字节数）排序，而不是按“1.5 MB”文本字符串排序 */
+    gtk_tree_view_column_set_sort_column_id(c2, 5);
     gtk_tree_view_append_column(GTK_TREE_VIEW(g.listview), c2);
 
     GtkCellRenderer *r3 = gtk_cell_renderer_text_new();
@@ -3323,7 +3466,9 @@ int view_open(const char *dir) {
     gtk_stack_add_named(GTK_STACK(g.stack), icon_scroll, "icon");
     gtk_stack_add_named(GTK_STACK(g.stack), list_scroll, "list");
     gtk_stack_add_named(GTK_STACK(g.stack), g.miller_scroll, "miller");
-    gtk_stack_set_visible_child_name(GTK_STACK(g.stack), "icon");
+    const char *dv = settings_default_view();
+    gtk_stack_set_visible_child_name(GTK_STACK(g.stack),
+        (dv && strcmp(dv, "list") == 0) ? "list" : "icon");
 
     
     GtkWidget *status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);

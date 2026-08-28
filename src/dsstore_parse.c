@@ -112,7 +112,7 @@ static void decode_addr(uint32_t addr, uint32_t *offset, uint32_t *size) {
 
 /* 从 block id 拿 offset+size；越界返回 0。注意：block 实际数据从 decode 出的 offset + 4 开始 */
 static int block_off(Ctx *c, uint32_t id, uint32_t *off, uint32_t *size) {
-    if ((int)id >= c->n_addrs) return -1;
+    if (id >= (uint32_t)c->n_addrs) return -1;
     uint32_t addr = c->addrs[id];
     decode_addr(addr, off, size);
     *off += 4; /* block-alignment: 数据从 offset+4 开始 */

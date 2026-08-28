@@ -1,10 +1,11 @@
 #!/bin/bash
 # Linder 卸载脚本：还原 inode/directory 关联到系统默认文件管理器，删掉安装的二进制和 .desktop
-# 谨慎：只影响 Linder 自己装的东西，不动系统其他配置
+# 谨慎：只影响 Linder 自己装的东西，不动系统其它配置
 set -e
 
 PREFIX="${PREFIX:-/usr/local}"
 BIN="$PREFIX/bin/Linder"
+BIN_LOWER="$PREFIX/bin/linder"
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP="Linder.desktop"
 
@@ -21,13 +22,21 @@ echo "==> 2/3 删除 .desktop 文件"
 rm -f "$APPS_DIR/$DESKTOP"
 update-desktop-database "$APPS_DIR" 2>/dev/null || true
 
-echo "==> 3/4 删除二进制"
+echo "==> 3/3 删除二进制"
 sudo rm -f "$BIN"
+sudo rm -f "$BIN_LOWER"
 
-echo "==> 4/4 删除图标"
+echo "==> 删除图标"
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/"*x*/apps/linder.png 2>/dev/null || true
 find "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" -name 'linder.png' -delete 2>/dev/null || true
 sudo find /usr/share/icons/hicolor -name 'linder.png' -delete 2>/dev/null || true
 
+echo "==> 删除 bash 自动补全"
+rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/linder" 2>/dev/null || true
+
+echo "==> 删除侧边栏图标目录"
+sudo rm -rf "$PREFIX/share/linder/icons" 2>/dev/null || true
+sudo rmdir "$PREFIX/share/linder" 2>/dev/null || true
+
 echo ""
-echo "✅ Linder 已卸载。双击文件夹恢复系统默认文件管理器。"
+echo "Linder 已卸载。双击文件夹恢复系统默认文件管理器。"

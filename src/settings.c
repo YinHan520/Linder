@@ -117,6 +117,19 @@ int settings_lang_force(void) {
     return r;
 }
 
+/* 显示隐藏文件开关（showhidden=on 返回 1，缺省/其它值返回 0） */
+int show_hidden_enabled(void) {
+    char *v = cfg_get("showhidden");
+    int on = (v && strcmp(v, "on") == 0) ? 1 : 0;
+    g_free(v);
+    return on;
+}
+
+/* 设置显示隐藏文件开关（命令行与设置面板共用同一入口） */
+void settings_set_show_hidden(int on) {
+    cfg_set("showhidden", on ? "on" : "off");
+}
+
 const char *settings_default_view(void) {
     /* 每次实时读，避免缓存导致切换视图后不生效 */
     char *v = cfg_get("view");
@@ -158,6 +171,13 @@ static gboolean on_poop_changed(GtkSwitch *sw, gboolean state, gpointer u) {
     return FALSE; /* 让 GTK 默认处理继续 */
 }
 
+/* 显示隐藏文件开关变更：直接生效 */
+static gboolean on_showhidden_changed(GtkSwitch *sw, gboolean state, gpointer u) {
+    (void)sw; (void)u;
+    cfg_set("showhidden", state ? "on" : "off");
+    return FALSE; /* 让 GTK 默认处理继续 */
+}
+
 static GtkWidget *make_lang_selector(void) {
     GtkWidget *cb = gtk_combo_box_text_new();
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(cb), "跟随系统");
@@ -183,6 +203,13 @@ static GtkWidget *make_poop_switch(void) {
     GtkWidget *sw = gtk_switch_new();
     gtk_switch_set_active(GTK_SWITCH(sw), dsstore_poop_enabled() ? TRUE : FALSE);
     g_signal_connect(sw, "state-set", G_CALLBACK(on_poop_changed), NULL);
+    return sw;
+}
+
+static GtkWidget *make_showhidden_switch(void) {
+    GtkWidget *sw = gtk_switch_new();
+    gtk_switch_set_active(GTK_SWITCH(sw), show_hidden_enabled() ? TRUE : FALSE);
+    g_signal_connect(sw, "state-set", G_CALLBACK(on_showhidden_changed), NULL);
     return sw;
 }
 
@@ -257,7 +284,8 @@ int settings_open(void) {
     add_row(GTK_GRID(grid), 0, "界面语言：", make_lang_selector());
     add_row(GTK_GRID(grid), 1, "默认视图：", make_view_selector());
     add_row(GTK_GRID(grid), 2, "排放 .DS_Store：", make_poop_switch());
-    add_row(GTK_GRID(grid), 3, "强力模式：", make_strong_button(g_win));
+    add_row(GTK_GRID(grid), 3, "显示隐藏文件：", make_showhidden_switch());
+    add_row(GTK_GRID(grid), 4, "强力模式：", make_strong_button(g_win));
 
     gtk_widget_show_all(g_win);
     return 0;
