@@ -17,3 +17,9 @@ vm_*.sh
 run_*.sh
 shot*.sh
 debug_*.py
+
+# release / secrets helper scripts (may contain tokens)
+create_release_*.py
+release_body_*.md
+*.AppImage
+.npmrc
