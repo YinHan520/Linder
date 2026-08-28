@@ -19,7 +19,7 @@
 #include <gtk/gtk.h>   /* 带出 g_get_home_dir/gtk_init/gtk_main 声明，避免隐式声明导致指针截断崩溃 */
 #include <glib/gstdio.h>   /* g_remove */
 
-#define LINDER_VERSION "0.7.10-alpha"
+#define LINDER_VERSION "0.7.11-alpha"
 
 static void usage(const char *prog) {
     printf("Linder %s — Linux 文件管理器（兼容 mac .DS_Store）\n\n", LINDER_VERSION);
